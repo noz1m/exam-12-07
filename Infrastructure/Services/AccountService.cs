@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 using System.Net;
@@ -21,15 +22,25 @@ public class AccountService(
     RoleManager<IdentityRole> roleManager,
     IConfiguration config,
     IHttpContextAccessor httpContext,
-    IEmailService emailService) : IAccountService
+    IEmailService emailService,
+    ILogger<AccountService> logger 
+) : IAccountService
 {
     public async Task<Response<string>> RegisterAsync(RegisterDTO register)
     {
+        logger.LogInformation("Register attempt for user {Username}", register.Username);
+
         if (await userManager.FindByNameAsync(register.Username) != null)
+        {
+            logger.LogWarning("Username {Username} already taken", register.Username);
             return Response<string>.Error("Username is already taken", HttpStatusCode.BadRequest);
+        }
 
         if (await userManager.FindByEmailAsync(register.Email) != null)
+        {
+            logger.LogWarning("Email {Email} already in use", register.Email);
             return Response<string>.Error("Email is already in use", HttpStatusCode.BadRequest);
+        }
 
         var user = new IdentityUser
         {
@@ -40,10 +51,16 @@ public class AccountService(
 
         var createResult = await userManager.CreateAsync(user, register.Password);
         if (!createResult.Succeeded)
+        {
+            logger.LogWarning("User creation failed: {Error}", createResult.Errors.First().Description);
             return Response<string>.Error(createResult.Errors.First().Description, HttpStatusCode.BadRequest);
+        }
 
         if (!await roleManager.RoleExistsAsync("User"))
+        {
+            logger.LogInformation("Role 'User' does not exist. Creating...");
             await roleManager.CreateAsync(new IdentityRole("User"));
+        }
 
         await userManager.AddToRoleAsync(user, "User");
 
@@ -58,21 +75,31 @@ public class AccountService(
         context.Customers.Add(customer);
         await context.SaveChangesAsync();
 
+        logger.LogInformation("User {Username} registered successfully", register.Username);
         return Response<string>.Success(string.Empty,"User registered successfully");
     }
 
     public async Task<Response<string>> LoginAsync(LoginDTO login)
     {
+        logger.LogInformation("Login attempt for identifier {LoginIdentifier}", login.LoginIdentifier);
+
         var user = await userManager.FindByNameAsync(login.LoginIdentifier)
                    ?? await userManager.FindByEmailAsync(login.LoginIdentifier);
 
         if (user == null)
+        {
+            logger.LogWarning("User not found for identifier {LoginIdentifier}", login.LoginIdentifier);
             return Response<string>.Error("User not found", HttpStatusCode.NotFound);
+        }
 
         if (!await userManager.CheckPasswordAsync(user, login.Password))
+        {
+            logger.LogWarning("Invalid password attempt for user {UserName}", user.UserName);
             return Response<string>.Error("Invalid credentials", HttpStatusCode.BadRequest);
+        }
 
         var token = await GenerateJwtToken(user);
+        logger.LogInformation("User {UserName} logged in successfully", user.UserName);
         return Response<string>.Success(token,string.Empty);
     }
 
@@ -80,24 +107,39 @@ public class AccountService(
     {
         var userId = httpContext.HttpContext?.User?.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userId))
+        {
+            logger.LogWarning("Unauthorized password change attempt");
             return Response<string>.Error("Unauthorized", HttpStatusCode.Unauthorized);
+        }
 
         var user = await userManager.FindByIdAsync(userId);
         if (user == null)
+        {
+            logger.LogWarning("User not found for password change: {UserId}", userId);
             return Response<string>.Error("User not found", HttpStatusCode.NotFound);
+        }
 
         var result = await userManager.ChangePasswordAsync(user, dto.OldPassword, dto.NewPassword);
         if (!result.Succeeded)
+        {
+            logger.LogWarning("Password change failed for user {UserName}: {Error}", user.UserName, result.Errors.First().Description);
             return Response<string>.Error(result.Errors.First().Description, HttpStatusCode.BadRequest);
+        }
 
+        logger.LogInformation("Password changed successfully for user {UserName}", user.UserName);
         return Response<string>.Success(string.Empty,"Password changed successfully");
     }
 
     public async Task<Response<string>> RequestPasswordResetAsync(ForgotPasswordRequestDTO dto)
     {
+        logger.LogInformation("Password reset requested for email {Email}", dto.Email);
+
         var user = await userManager.FindByEmailAsync(dto.Email);
         if (user == null)
+        {
+            logger.LogInformation("Password reset requested for non-existing email {Email}", dto.Email);
             return Response<string>.Success(string.Empty,"If email exists, reset code has been sent");
+        }
 
         var oldTokens = await context.PasswordResetTokens
             .Where(t => t.Email == dto.Email && !t.IsUsed)
@@ -119,33 +161,49 @@ public class AccountService(
 
         await emailService.SendResetPasswordEmailAsync(dto.Email, code);
 
+        logger.LogInformation("Reset code sent to email {Email}", dto.Email);
         return Response<string>.Success(string.Empty,"Reset code sent to email");
     }
 
     public async Task<Response<string>> ResetPasswordAsync(ResetPasswordDTO dto)
     {
+        logger.LogInformation("Password reset attempt for email {Email}", dto.Email);
+
         var resetToken = await context.PasswordResetTokens
             .FirstOrDefaultAsync(t => t.Email == dto.Email && t.Code == dto.ResetCode && !t.IsUsed);
 
         if (resetToken == null)
+        {
+            logger.LogWarning("Invalid reset code attempt for email {Email}", dto.Email);
             return Response<string>.Error("Invalid reset code", HttpStatusCode.BadRequest);
+        }
 
         if (resetToken.Expiration < DateTime.UtcNow)
+        {
+            logger.LogWarning("Expired reset code attempt for email {Email}", dto.Email);
             return Response<string>.Error("Reset code expired", HttpStatusCode.BadRequest);
+        }
 
         var user = await userManager.FindByEmailAsync(dto.Email);
         if (user == null)
+        {
+            logger.LogWarning("User not found for password reset: {Email}", dto.Email);
             return Response<string>.Error("User not found", HttpStatusCode.NotFound);
+        }
 
         var token = await userManager.GeneratePasswordResetTokenAsync(user);
         var result = await userManager.ResetPasswordAsync(user, token, dto.NewPassword);
 
         if (!result.Succeeded)
+        {
+            logger.LogWarning("Password reset failed for user {UserName}: {Error}", user.UserName, result.Errors.First().Description);
             return Response<string>.Error(result.Errors.First().Description, HttpStatusCode.BadRequest);
+        }
 
         resetToken.IsUsed = true;
         await context.SaveChangesAsync();
 
+        logger.LogInformation("Password reset successful for user {UserName}", user.UserName);
         return Response<string>.Success(string.Empty,"Password reset successfully");
     }
 

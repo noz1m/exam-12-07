@@ -33,7 +33,7 @@ builder.Services.AddSwaggerGen(options =>
     {
         Title = "FleetMaster API",
         Version = "v1",
-        Description = "Автопарк — CRUD + Авторизация + Статистика",
+        Description = "Car Service",
         Contact = new OpenApiContact
         {
             Name = "Nozim Qoziev",
@@ -158,15 +158,10 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 app.UseStaticFiles();
-
 app.UseRouting();
-
 app.UseAuthentication();
 app.UseAuthorization();
-
 // Добавляем свой middleware (вызывается через pipeline)
 app.UseMiddleware<RequestLoggingMiddleware>();
-
 app.MapControllers();
-
 app.Run();
